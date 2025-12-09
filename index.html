@@ -1,0 +1,418 @@
+<!-- InfinityFree Chat — Upgraded
+  Features included:
+  - Modern responsive UI (single-file HTML + CSS + JS)
+  - Create / Join room with PASSWORD (hashed client-side)
+  - Public room chat + private (direct) messages between two users
+  - File uploads (Firebase Storage) with preview and download
+  - Audio / Video calls (WebRTC) using Firebase Realtime Database for signaling
+
+  How to use:
+  1) Create a Firebase project with Realtime Database (rules set to allow reads/writes for testing) and Storage.
+  2) Replace the FIREBASE CONFIG block below with your project's config.
+  3) Upload this single file (index.html) and a small style.css if you prefer to InfinityFree (or keep embedded CSS).
+  4) Open in two browsers / share URL + room password with your friend.
+
+  Security notes:
+  - Passwords are hashed client-side using SHA-256 before being stored in the DB. This is more secure than plaintext but not as safe as server-side hashing.
+  - For production, move room management to a server and enforce proper auth rules.
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>InfinityFree — Private Chat (Upgraded)</title>
+<style>
+  :root{--bg:#0f1724;--card:#0b1220;--muted:#9aa4b2;--accent:#6ee7b7}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Inter,Segoe UI, system-ui,Arial;background:linear-gradient(180deg,#071022 0%, #071a2b 100%);color:#e6eef6}
+  .wrap{max-width:1100px;margin:28px auto;padding:18px}
+  .grid{display:grid;grid-template-columns:360px 1fr;gap:18px}
+  .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.02));padding:16px;border-radius:12px;box-shadow:0 6px 24px rgba(2,6,23,0.6)}
+  h1{margin:0 0 10px;font-size:20px}
+  label{display:block;font-size:12px;color:var(--muted);margin-top:8px}
+  input,button,select{width:100%;padding:10px;margin-top:6px;border-radius:8px;border:1px solid rgba(255,255,255,0.05);background:transparent;color:inherit}
+  .small{font-size:13px;color:var(--muted)}
+  .rooms {max-height:420px;overflow:auto;margin-top:12px}
+  .roomItem{padding:8px;border-radius:8px;margin-bottom:8px;background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(0,0,0,0.01));cursor:pointer}
+  .main{display:flex;flex-direction:column;height:78vh}
+  .messages{flex:1;overflow:auto;padding:12px;border-radius:10px;background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(0,0,0,0.01))}
+  .msg{margin-bottom:10px}
+  .meta{font-size:12px;color:var(--muted)}
+  .controls{display:flex;gap:8px;margin-top:8px}
+  .fileList{margin-top:8px}
+  .rightTop{display:flex;gap:8px;align-items:center}
+  .users{display:flex;gap:8px;flex-wrap:wrap}
+  .userBtn{padding:6px 8px;border-radius:8px;background:rgba(255,255,255,0.03);cursor:pointer}
+  .pill{display:inline-block;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,0.03);font-size:12px}
+  .videoWrap{display:flex;gap:8px;margin-top:8px}
+  video{width:100%;border-radius:8px;background:black}
+  .smallMuted{font-size:12px;color:var(--muted)}
+  .danger{background:#3b0f11}
+  @media(max-width:900px){.grid{grid-template-columns:1fr;}.main{height:65vh}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="grid">
+    <div class="card">
+      <h1>Private Chat — Setup</h1>
+      <div class="small">Create or join a room. Share ROOM ID + PASSWORD only with your friend.</div>
+
+      <label>Room ID</label>
+      <input id="roomIdInput" placeholder="example: alice-bob" />
+      <label>Password</label>
+      <input id="roomPassword" type="password" placeholder="room password" />
+      <label>Your name</label>
+      <input id="yourName" placeholder="Your display name" />
+
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button id="createRoomBtn">Create Room</button>
+        <button id="joinRoomBtn">Join Room</button>
+      </div>
+
+      <div class="small" style="margin-top:12px">Room list (discovery) — click to autofill</div>
+      <div class="rooms" id="roomsList"></div>
+
+      <hr style="margin-top:12px;border:none;border-top:1px solid rgba(255,255,255,0.03)" />
+      <div class="smallMuted">Storage: Files are uploaded to Firebase Storage and shared as links. Video/Audio uses WebRTC P2P and Firebase Realtime DB for signaling.</div>
+
+    </div>
+
+    <div class="card main">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div>
+          <strong id="roomLabel">Not connected</strong>
+          <div class="small" id="participants">—</div>
+        </div>
+        <div class="rightTop">
+          <div class="pill" id="connectionState">Idle</div>
+          <button id="leaveBtn" class="danger">Leave</button>
+        </div>
+      </div>
+
+      <div class="messages" id="messages"></div>
+
+      <div class="controls">
+        <select id="toSelect"><option value="all">Everyone</option></select>
+        <input id="msgInput" placeholder="Type a message..." />
+        <input id="fileInput" type="file" style="width:auto" />
+        <button id="sendBtn">Send</button>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+        <button id="callBtn">Start Call (AV)</button>
+        <button id="hangupBtn" disabled>Hang Up</button>
+        <div class="users" id="usersList"></div>
+      </div>
+
+      <div class="videoWrap" id="videoArea" style="display:none">
+        <video id="localVideo" autoplay muted playsinline></video>
+        <video id="remoteVideo" autoplay playsinline></video>
+      </div>
+
+      <div class="fileList" id="fileList"></div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Firebase SDKs -->
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js"></script>
+
+<script>
+// ==================== IMPORTANT: Replace this with your Firebase config ====================
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBrrzr9jg_YbSNYSQnD77-pNaaCnGWgcj0",
+  authDomain: "privatechat-7228f.firebaseapp.com",
+  databaseURL: "https://privatechat-7228f-default-rtdb.firebaseio.com",
+  projectId: "privatechat-7228f",
+  storageBucket: "privatechat-7228f.appspot.com",
+  messagingSenderId: "206820695072",
+  appId: "1:206820695072:web:e5bbcee8bf9c833608f045",
+  measurementId: "G-YBBNVBYBTT"
+};
+// ==========================================================================================
+
+// Initialize Firebase
+const app = firebase.initializeApp(FIREBASE_CONFIG);
+const db = firebase.database();
+const storage = firebase.storage();
+
+// UI refs
+const roomIdInput = document.getElementById('roomIdInput');
+const roomPassword = document.getElementById('roomPassword');
+const yourName = document.getElementById('yourName');
+const createRoomBtn = document.getElementById('createRoomBtn');
+const joinRoomBtn = document.getElementById('joinRoomBtn');
+const roomsList = document.getElementById('roomsList');
+const roomLabel = document.getElementById('roomLabel');
+const participants = document.getElementById('participants');
+const connectionState = document.getElementById('connectionState');
+const leaveBtn = document.getElementById('leaveBtn');
+const messagesDiv = document.getElementById('messages');
+const msgInput = document.getElementById('msgInput');
+const sendBtn = document.getElementById('sendBtn');
+const toSelect = document.getElementById('toSelect');
+const usersList = document.getElementById('usersList');
+const fileInput = document.getElementById('fileInput');
+const fileListDiv = document.getElementById('fileList');
+const callBtn = document.getElementById('callBtn');
+const hangupBtn = document.getElementById('hangupBtn');
+const videoArea = document.getElementById('videoArea');
+const localVideo = document.getElementById('localVideo');
+const remoteVideo = document.getElementById('remoteVideo');
+
+let currentRoom = null;
+let username = null;
+let myId = null;
+let participantsMap = {}; // socket-like ids
+let myRole = null; // owner or guest
+
+// WebRTC
+let pc = null;
+let localStream = null;
+
+// Utility: SHA-256 hash for password
+async function sha256Hex(msg){
+  const enc = new TextEncoder();
+  const data = enc.encode(msg);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// Basic room discovery (list rooms in DB)
+function refreshRoomList(){
+  roomsList.innerHTML = '';
+  db.ref('rooms').limitToFirst(50).once('value', snap => {
+    const val = snap.val() || {};
+    Object.keys(val).forEach(id => {
+      const el = document.createElement('div');
+      el.className='roomItem';
+      el.textContent = id;
+      el.onclick = ()=>{ roomIdInput.value = id; };
+      roomsList.appendChild(el);
+    });
+  });
+}
+refreshRoomList();
+
+// Create room
+createRoomBtn.onclick = async ()=>{
+  const id = roomIdInput.value.trim();
+  const pwd = roomPassword.value;
+  const name = yourName.value.trim() || 'Anon';
+  if(!id||!pwd) return alert('provide room id and password');
+  const hash = await sha256Hex(pwd);
+  // store room metadata
+  await db.ref('rooms/'+id+'/meta').set({ passwordHash: hash, owner: name, created: Date.now() });
+  alert('room created');
+  refreshRoomList();
+}
+
+// Join room
+joinRoomBtn.onclick = async ()=>{
+  const id = roomIdInput.value.trim();
+  const pwd = roomPassword.value;
+  username = yourName.value.trim() || 'Anon';
+  if(!id||!pwd) return alert('provide room id and password');
+  const hash = await sha256Hex(pwd);
+  const metaSnap = await db.ref('rooms/'+id+'/meta').once('value');
+  const meta = metaSnap.val();
+  if(!meta) return alert('room not found');
+  if(meta.passwordHash !== hash) return alert('wrong password');
+
+  myId = 'u_' + Math.random().toString(36).slice(2,9);
+  currentRoom = id;
+  roomLabel.textContent = `Room: ${id}`;
+  connectionState.textContent = 'Connected';
+  roomPassword.value='';
+
+  // register participant
+  await db.ref(`rooms/${id}/participants/${myId}`).set({ name: username, joined: Date.now() });
+  db.ref(`rooms/${id}/participants/${myId}`).onDisconnect().remove();
+
+  // listen participants
+  db.ref(`rooms/${id}/participants`).on('value', snap=>{
+    const val = snap.val()||{};
+    participantsMap = val;
+    updateParticipantsUI();
+  });
+
+  // listen messages
+  db.ref(`rooms/${id}/messages`).on('child_added', snap=>{
+    const m = snap.val();
+    renderMessage(m);
+  });
+
+  // listen files listing
+  db.ref(`rooms/${id}/files`).on('child_added', snap=>{
+    const f = snap.val();
+    renderFile(f);
+  });
+
+  // signaling for WebRTC
+  db.ref(`rooms/${id}/signals`).on('child_added', snap=>{
+    const sig = snap.val();
+    handleSignal(sig);
+  });
+
+  // add self to toSelect
+  updateToSelect();
+}
+
+function updateParticipantsUI(){
+  participants.innerText = Object.values(participantsMap).length + ' participants';
+  usersList.innerHTML='';
+  toSelect.innerHTML = '<option value="all">Everyone</option>';
+  Object.keys(participantsMap).forEach(id=>{
+    const p = participantsMap[id];
+    const btn = document.createElement('div'); btn.className='userBtn'; btn.textContent = p.name; btn.onclick = ()=>{ toSelect.value = id; };
+    usersList.appendChild(btn);
+    const opt = document.createElement('option'); opt.value=id; opt.textContent = p.name; toSelect.appendChild(opt);
+  });
+}
+
+function updateToSelect(){
+  // preserved; will be updated from participants listener
+}
+
+// Send message (public or private)
+sendBtn.onclick = async ()=>{
+  if(!currentRoom) return alert('join a room');
+  const text = msgInput.value.trim();
+  const to = toSelect.value; // 'all' or user id
+  const m = { fromId: myId, fromName: username, to: to, text: text || null, time: Date.now(), type:'text' };
+  if(text) await db.ref(`rooms/${currentRoom}/messages`).push(m);
+  msgInput.value='';
+}
+
+function renderMessage(m){
+  const el = document.createElement('div'); el.className='msg';
+  const who = m.fromName || 'Unknown';
+  const t = new Date(m.time).toLocaleTimeString();
+  let target = '';
+  if(m.to && m.to !== 'all'){
+    const targetName = (participantsMap[m.to] && participantsMap[m.to].name) || 'Private';
+    target = ` → ${targetName}`;
+    if(m.to !== myId && m.fromId !== myId) return; // not for me
+  }
+  el.innerHTML = `<div class="meta"><strong>${escapeHtml(who)}</strong>${target} <span class="smallMuted">${t}</span></div>`;
+  if(m.type==='file'){
+    el.innerHTML += `<div><a href="${m.fileUrl}" target="_blank">${escapeHtml(m.fileName)}</a> <small>(${m.size} bytes)</small></div>`;
+  }else{
+    el.innerHTML += `<div>${escapeHtml(m.text||'')}</div>`;
+  }
+  messagesDiv.appendChild(el);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+function renderFile(f){
+  const el = document.createElement('div'); el.className='msg';
+  el.innerHTML = `<div class="meta"><strong>${escapeHtml(f.uploaderName)}</strong> <span class="smallMuted">${new Date(f.time).toLocaleTimeString()}</span></div><div><a href="${f.url}" target="_blank">${escapeHtml(f.name)}</a></div>`;
+  fileListDiv.appendChild(el);
+}
+
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[c]); }
+
+// File upload
+fileInput.onchange = async (e)=>{
+  const f = e.target.files[0];
+  if(!f) return;
+  if(!currentRoom) return alert('join a room first');
+  const ref = storage.ref().child(`rooms/${currentRoom}/files/${Date.now()}_${f.name}`);
+  const up = ref.put(f);
+  up.on('state_changed', snap=>{
+    connectionState.textContent = 'Uploading...';
+  }, err=>{ alert('upload error'); connectionState.textContent='Connected'; }, async ()=>{
+    const url = await ref.getDownloadURL();
+    const meta = { uploaderId: myId, uploaderName: username, name: f.name, url, size: f.size, time: Date.now() };
+    await db.ref(`rooms/${currentRoom}/files`).push(meta);
+    // also announce as message
+    await db.ref(`rooms/${currentRoom}/messages`).push({ fromId: myId, fromName: username, to: 'all', type:'file', fileUrl: url, fileName: f.name, size: f.size, time: Date.now() });
+    connectionState.textContent='Connected';
+  });
+}
+
+// WebRTC helpers
+async function startCall(){
+  if(!currentRoom) return alert('join a room');
+  callBtn.disabled = true; hangupBtn.disabled = false; videoArea.style.display='flex';
+  localStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:true });
+  localVideo.srcObject = localStream;
+  pc = new RTCPeerConnection();
+  localStream.getTracks().forEach(t=>pc.addTrack(t, localStream));
+  pc.ontrack = e=>{ remoteVideo.srcObject = e.streams[0]; }
+  pc.onicecandidate = e=>{ if(e.candidate) sendSignal({ type:'ice', candidate:e.candidate }); }
+
+  // create offer
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await sendSignal({ type:'offer', sdp:offer.sdp, from: myId });
+}
+
+async function handleSignal(sig){
+  if(!sig) return;
+  if(sig.from === myId) return; // ignore our own
+  if(sig.type==='offer'){
+    // we received offer — create pc and answer
+    if(pc) return;
+    pc = new RTCPeerConnection();
+    localStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:true });
+    localVideo.srcObject = localStream;
+    localStream.getTracks().forEach(t=>pc.addTrack(t, localStream));
+    pc.ontrack = e=>{ remoteVideo.srcObject = e.streams[0]; }
+    pc.onicecandidate = e=>{ if(e.candidate) sendSignal({ type:'ice', candidate:e.candidate, to: sig.from }); }
+    await pc.setRemoteDescription({ type:'offer', sdp: sig.sdp });
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await sendSignal({ type:'answer', sdp:answer.sdp, to: sig.from, from: myId });
+    videoArea.style.display='flex'; hangupBtn.disabled=false; callBtn.disabled=true;
+  }else if(sig.type==='answer'){
+    if(!pc) return;
+    await pc.setRemoteDescription({ type:'answer', sdp: sig.sdp });
+  }else if(sig.type==='ice'){
+    if(!pc) return;
+    try{ await pc.addIceCandidate(sig.candidate); }catch(e){ console.warn('ice add fail', e); }
+  }
+}
+
+async function sendSignal(obj){
+  if(!currentRoom) return;
+  const payload = Object.assign({}, obj, { from: myId, time: Date.now() });
+  // if targeting specific user, include 'to'
+  await db.ref(`rooms/${currentRoom}/signals`).push(payload);
+}
+
+callBtn.onclick = ()=> startCall();
+hangupBtn.onclick = async ()=>{
+  if(pc){ pc.close(); pc=null; }
+  if(localStream){ localStream.getTracks().forEach(t=>t.stop()); localStream=null; }
+  videoArea.style.display='none'; hangupBtn.disabled=true; callBtn.disabled=false;
+  await sendSignal({ type:'hangup', from: myId });
+}
+
+// receive hangup
+db.ref('rooms').on('child_changed', ()=>{});
+
+// Leave
+leaveBtn.onclick = async ()=>{
+  if(!currentRoom) return location.reload();
+  await db.ref(`rooms/${currentRoom}/participants/${myId}`).remove();
+  location.reload();
+}
+
+// Signal cleanup — limit signals stored
+setInterval(()=>{
+  if(!currentRoom) return;
+  db.ref(`rooms/${currentRoom}/signals`).limitToFirst(200).once('value',snap=>{
+    // noop — relying on Firebase TTL or manual cleanup later
+  });
+}, 60_000);
+
+</script>
+</body>
+</html>
